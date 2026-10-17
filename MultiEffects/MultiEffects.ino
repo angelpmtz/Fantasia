@@ -18,6 +18,10 @@
     POT/CV 4 = dry level
 
   On boot no effect is engaged: only the dry signal (POT/CV 4) passes.
+
+  Display: turning a knob shows its value (0-10) on the 7 segment display,
+  10 is shown as "9." (nine with the decimal point). After 2 seconds
+  without touching a knob the display shows a spinning animation.
 */
 
 #include <Audio.h>
@@ -26,9 +30,11 @@
 #include <SD.h>
 #include <SerialFlash.h>
 #include <Bounce.h>
+#include "SegmentDisplay.h"  /* Seven Segment Library by Derek Duncan */
 
-//Display LEDs Declaration
-//SegmentDisplay segmentDisplay(30, 32, 33, 28, 31, 26, 29, 9);
+//                             E   D   C  DP  B   A   G   F
+//                             1   2   4  5   6   7   9  10
+SegmentDisplay segmentDisplay(31, 28, 33, 9, 32, 30, 26, 29);
 
 //Chorus delay line: 4096 samples -> chorus taps from 0.7 ms to 46 ms
 #define CHORUS_DELAY_LENGTH   (32 * AUDIO_BLOCK_SAMPLES)
@@ -125,6 +131,27 @@ int lastChorusVoices = 2;
 int lastChorusDepth = CHORUS_DELAY_LENGTH;
 int lastDelayMs = -1;
 
+// 7 segment display: shows the value of the knob that is being turned on a
+// 0..10 scale (the display has a single digit, so 10 is shown as "9." with
+// the decimal point). After DISPLAY_IDLE_MS without knob movement the
+// display runs a spinning animation until a knob is touched again.
+#define DISPLAY_IDLE_MS 2000
+#define DISPLAY_SPIN_MS 80
+int  displayValue = -1;          // digit currently shown, -1 = nothing yet
+int  displayKnob = -1;           // knob whose value is shown (0..3)
+int  lastQuant[4] = {-1, -1, -1, -1}; // last 0..10 step of every knob
+unsigned long lastKnobMoveMs = 0;
+bool displaySleeping = false;
+int  spinStep = 0;
+unsigned long lastSpinMs = 0;
+
+// same pins as segmentDisplay, needed to drive the spin animation directly
+// (the library has no per-segment API). Common anode: LOW = segment lit.
+//                             E   D   C  DP  B   A   G   F
+byte displayPins[8]       = {31, 28, 33, 9, 32, 30, 26, 29};
+// spin order: A B C D E F G DP, going clockwise around the display
+const byte spinOrder[8]   = { 5,  4,  2,  1,  0,  7,  6,  3};
+
 // prototypes (the Arduino IDE generates these automatically, PlatformIO does not)
 void applyGranularLength(bool restart);
 
@@ -185,6 +212,57 @@ void applyGranularLength(bool restart) {
   }
 }
 
+// show a 0..10 knob value on the 7 segment display, 10 is shown as "9."
+void displayKnobValue(int knob, int value) {
+  if (value == displayValue && knob == displayKnob) return;
+  displayValue = value;
+  displayKnob = knob;
+  if (value >= 10) segmentDisplay.displayHex(9, true);
+  else segmentDisplay.displayHex(value, false);
+}
+
+// call every pass of loop(): shows the value of the knob that is moving and
+// after 2 seconds without movement switches to the spinning animation
+void updateDisplay() {
+  float pots[4] = {PotNorm1, PotNorm2, PotNorm3, PotNorm4};
+  int moved = -1;
+
+  // quantize to 0..10, a step is ~51 ADC counts so pot noise doesn't flicker
+  for (int i = 0; i < 4; i++) {
+    int value = (int)(pots[i] * 10.0f + 0.5f);
+    if (value != lastQuant[i]) {
+      lastQuant[i] = value;
+      moved = i;
+    }
+  }
+
+  unsigned long now = millis();
+
+  if (moved >= 0) {
+    // a knob crossed a full step: show its value
+    displayKnobValue(moved, lastQuant[moved]);
+    lastKnobMoveMs = now;
+    displaySleeping = false;
+    return;
+  }
+
+  // no knob movement: after 2 s idle, spin the segments one at a time
+  if (!displaySleeping && now - lastKnobMoveMs >= DISPLAY_IDLE_MS) {
+    displaySleeping = true;
+    spinStep = 0;
+    lastSpinMs = now;
+  }
+
+  if (displaySleeping && now - lastSpinMs >= DISPLAY_SPIN_MS) {
+    lastSpinMs = now;
+    for (int s = 0; s < 8; s++) {
+      digitalWrite(displayPins[s], HIGH);          // all off (common anode)
+    }
+    digitalWrite(displayPins[spinOrder[spinStep]], LOW); // one lit
+    spinStep = (spinStep + 1) % 8;
+  }
+}
+
 void setup() {
 
 //Audio setup
@@ -204,15 +282,8 @@ void setup() {
   pinMode(Boton3, INPUT_PULLUP);
   pinMode(Boton4, INPUT_PULLUP);
 
-//Set Display LEDs ports as Outputs
-  pinMode(30, OUTPUT);
-  pinMode(32, OUTPUT);
-  pinMode(33, OUTPUT);
-  pinMode(28, OUTPUT);
-  pinMode(31, OUTPUT);
-  pinMode(26, OUTPUT);
-  pinMode(29, OUTPUT);
-  pinMode(9, OUTPUT);
+  // the SegmentDisplay constructor already configures the display pins
+  // (30, 32, 33, 28, 31, 26, 29, 9)
 
   // effects that need their buffers set up
   chorus1.begin(chorusDelayline, CHORUS_DELAY_LENGTH, lastChorusVoices);
@@ -233,6 +304,15 @@ void setup() {
   outMixer.gain(1, 1.0);
   outMixer.gain(2, 0);
   outMixer.gain(3, 0);
+
+  // seed the display tracking with the current knob positions so it starts
+  // with the spinning animation instead of showing a value nobody turned
+  float bootPots[4] = {(float)analogRead(PotPort1) / 1023.0f,
+                       (float)analogRead(PotPort2) / 1023.0f,
+                       (float)analogRead(PotPort3) / 1023.0f,
+                       (float)analogRead(PotPort4) / 1023.0f};
+  for (int i = 0; i < 4; i++) lastQuant[i] = (int)(bootPots[i] * 10.0f + 0.5f);
+  lastKnobMoveMs = millis() - DISPLAY_IDLE_MS; // begin spinning right away
 }
 
 
@@ -243,6 +323,9 @@ void loop() {
   PotNorm2 = (float)analogRead(PotPort2) / 1023.0;
   PotNorm3 = (float)analogRead(PotPort3) / 1023.0;
   PotNorm4 = (float)analogRead(PotPort4) / 1023.0;
+
+  // 7 segment display: knob value while turning, spin animation when idle
+  updateDisplay();
 
   // read the buttons, pressing one engages its effect
   boton1.update();

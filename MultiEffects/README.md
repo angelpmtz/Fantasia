@@ -93,6 +93,19 @@ line in (left) ──┬──> reverb   ──┐
 The sketch processes the left channel of the line input and sends the
 result to both outputs.
 
+## 7 segment display
+
+The onboard display is a single digit with a decimal point:
+
+* **Turning any knob** shows its value on a **0–10** scale (10 = full turn).
+  The display always shows the knob you touched last.
+* **10 is displayed as "9."** (nine with the decimal point), since there is
+  only one digit.
+* **After 2 seconds** without touching a knob, the display switches to a
+  **spinning animation** (one segment lighting up in a circle) until a
+  knob is moved again.
+* On boot the spinning animation starts immediately.
+
 ## Pins used
 
 | Function | Pin |
@@ -103,7 +116,11 @@ result to both outputs.
 
 ## Notes
 
-* Dependencies: Teensy Audio Library and Bounce, both come with Teensyduino.
+* Dependencies: Teensy Audio Library and Bounce (both come with
+  Teensyduino), plus the
+  [Seven Segment Library by Derek Duncan](https://github.com/dgduncan/SevenSegment)
+  for the display. In PlatformIO add to `lib_deps`:
+  `git+https://github.com/dgduncan/SevenSegment`
 * `AudioMemory(400)` ≈ 105 KB of RAM for the audio block pool, sized for
   the 1000 ms maximum delay. The sketch is tuned for Teensy 4.x (like the
   rest of the Fantasia firmware). On a Teensy 3.x lower `MAX_DELAY_MS`
